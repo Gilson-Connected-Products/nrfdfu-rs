@@ -1,9 +1,13 @@
 use log::LevelFilter;
+use serde_json::from_str;
 use serialport::{available_ports, SerialPort};
 use std::convert::TryInto;
 use std::hash::Hasher;
+use std::io::Read;
 use std::time::Duration;
 use std::{error::Error, fs};
+use serde::Deserialize;
+use zip::ZipArchive;
 
 #[macro_use]
 mod macros;
@@ -39,13 +43,12 @@ fn run() -> Result<()> {
         .parse_default_env()
         .init();
 
-    let elf_path = std::env::args_os()
+    let zip_path = std::env::args_os()
         .skip(1)
         .next()
-        .ok_or_else(|| format!("missing argument (expected path to ELF file)"))?;
-    let elf = fs::read(&elf_path)
-        .map_err(|e| format!("couldn't read `{}`: {}", elf_path.to_string_lossy(), e))?;
-    let mut image = elf::read_elf_image(&elf)?;
+        .ok_or_else(|| "missing argument (expected path to .zip file)".to_string())?;
+    let (dat, mut bin) =
+        read_zip_file(zip_path.as_os_str().to_str().unwrap())?;
 
     let matching_ports: Vec<_> = available_ports()?
         .into_iter()
@@ -57,20 +60,21 @@ fn run() -> Result<()> {
 
     let mut port = match matching_ports.len() {
         0 => {
-            return Err(format!(
-                "no matching USB serial device found.\n       Remember to put the \
-                                 device in bootloader mode by pressing the reset button!"
+            return Err(
+                "no matching USB serial device found.\n\
+                Remember to put the device in bootloader mode!"
+                    .to_string()
+                    .into()
             )
-            .into())
         }
         1 => {
             let port = &matching_ports[0].port_name;
             log::debug!("opening {} (type {:?})", port, matching_ports[0].port_type);
             serialport::new(port, 115200)
-                .timeout(Duration::from_millis(1000))
+                .timeout(Duration::from_millis(60000))
                 .open()?
         }
-        _ => return Err(format!("multiple matching USB serial devices found").into()),
+        _ => return Err("multiple matching USB serial devices found".to_string().into()),
     };
 
     // On Windows, this is required, otherwise communication fails with timeouts
@@ -93,13 +97,12 @@ fn run() -> Result<()> {
 
     // The firmware image must be padded with 0xFF to be a multiple of 4 Bytes. To our knowledge,
     // this is undocumented.
-    while image.len() % 4 != 0 {
-        image.push(0xff);
+    while bin.len() % 4 != 0 {
+        bin.push(0xff);
     }
 
-    let init_packet = init_packet::build_init_packet(&image);
-    conn.send_init_packet(&init_packet)?;
-    conn.send_firmware(&image)?;
+    conn.send_dat(&dat)?;
+    conn.send_bin(&bin)?;
 
     Ok(())
 }
@@ -162,7 +165,7 @@ impl BootloaderConnection {
             .map_err(|e| format!("error while reading from serial port: {}", e))?;
         log::trace!("<-- {:?}", self.buf);
 
-        messages::parse_response::<R>(&self.buf)
+        parse_response::<R>(&self.buf)
     }
 
     fn fetch_protocol_version(&mut self) -> Result<u8> {
@@ -179,8 +182,8 @@ impl BootloaderConnection {
 
     /// Sends the `.dat` file that's zipped into our firmware DFU .zip(?)
     /// modeled after `pc-nrfutil`s `dfu_transport_serial::send_init_packet()`
-    fn send_init_packet(&mut self, data: &[u8]) -> Result<()> {
-        log::info!("Sending init packet...");
+    fn send_dat(&mut self, data: &[u8]) -> Result<()> {
+        log::info!("Sending dat file (init packet)...");
         let select_response = self.select_object_command()?;
         log::debug!("Object selected: {:?}", select_response);
 
@@ -203,8 +206,8 @@ impl BootloaderConnection {
 
     /// Sends the firmware image at `bin_path`.
     /// This is done in chunks to avoid exceeding our MTU  and involves periodic CRC checks.
-    fn send_firmware(&mut self, image: &[u8]) -> Result<()> {
-        log::info!("Sending firmware image of size {}...", image.len());
+    fn send_bin(&mut self, image: &[u8]) -> Result<()> {
+        log::info!("Sending bin (firmware image) of size {}...", image.len());
 
         log::debug!("Selecting Object: type Data");
         let select_response = self.select_object_data()?;
@@ -323,4 +326,45 @@ impl BootloaderConnection {
     fn execute(&mut self) -> Result<ExecuteResponse> {
         self.request_response(ExecuteRequest)
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct Application {
+    dat_file: String,
+    bin_file: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Manifest {
+    application: Application,
+}
+
+#[derive(Debug, Deserialize)]
+struct OuterManifest {
+    manifest: Manifest,
+}
+
+fn read_zip_file(path: &str) -> Result<(Vec<u8>, Vec<u8>)> {
+    let reader = fs::File::open(path)?;
+    let mut archive = ZipArchive::new(reader)?;
+    let application = {
+        let mut file = archive.by_name("manifest.json")?;
+        let mut manifest_string = String::new();
+        file.read_to_string(&mut manifest_string)?;
+        let outer = from_str::<OuterManifest>(&manifest_string)?;
+        outer.manifest.application
+    };
+    let dat_file = {
+        let mut file = archive.by_name(&application.dat_file)?;
+        let mut dat_vec = Vec::new();
+        file.read_to_end(&mut dat_vec)?;
+        dat_vec
+    };
+    let bin_file = {
+        let mut file = archive.by_name(&application.bin_file)?;
+        let mut bin_vec = Vec::new();
+        file.read_to_end(&mut bin_vec)?;
+        bin_vec
+    };
+    Ok((dat_file, bin_file))
 }

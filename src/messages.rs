@@ -12,7 +12,7 @@ use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 pub enum OpCode {
     ProtocolVersion = 0x00,
     CreateObject = 0x01,
-    ReceiptNotifSet = 0x02,
+    ReceiptNotificationSet = 0x02,
     Crc = 0x03,
     Execute = 0x04,
     Select = 0x06,
@@ -289,7 +289,7 @@ impl Response for CreateObjectResponse {
 pub struct SetPrnRequest(pub u16);
 
 impl Request for SetPrnRequest {
-    const OPCODE: OpCode = OpCode::ReceiptNotifSet;
+    const OPCODE: OpCode = OpCode::ReceiptNotificationSet;
 
     type Response = SetPrnResponse;
 
@@ -437,7 +437,7 @@ pub fn parse_response<R: Request>(buf: &[u8]) -> crate::Result<R::Response> {
 
     match result {
         ResultCode::Success => {}
-        ResultCode::ExtError => match buf.get(3) {
+        ResultCode::ExtError => return match buf.get(3) {
             Some(byte) => {
                 let ext_error: ExtError = ExtError::from_primitive(*byte).ok_or_else(|| {
                     format!(
@@ -446,14 +446,14 @@ pub fn parse_response<R: Request>(buf: &[u8]) -> crate::Result<R::Response> {
                     )
                 })?;
 
-                return Err(DfuError {
+                Err(DfuError {
                     code: ResultCode::ExtError,
                     ext_error: Some(ext_error),
                 }
-                .into());
+                    .into())
             }
             None => {
-                return Err(format!("malformed response (missing extended error byte)").into());
+                Err("malformed response (missing extended error byte)".to_string().into())
             }
         },
         code => {
@@ -466,10 +466,10 @@ pub fn parse_response<R: Request>(buf: &[u8]) -> crate::Result<R::Response> {
     }
 
     let mut response_bytes = &buf[3..];
-    let response = R::Response::read_payload(&mut response_bytes)?;
+    let response = Response::read_payload(&mut response_bytes)?;
 
     if !response_bytes.is_empty() {
-        return Err(format!("trailing bytes in response").into());
+        return Err("trailing bytes in response".to_string().into());
     }
 
     Ok(response)

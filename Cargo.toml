@@ -12,11 +12,14 @@ description = "A flashing tool for the nRF bootloader"
 repository = "https://github.com/ferrous-systems/nrfdfu-rs"
 
 [dependencies]
-byteorder = "1.4.3"
-leb128 = "0.2.4"
-sha2 = "0.9.3"
-log = "0.4.14"
-crc32fast = "1.2.1"
+byteorder = "1.5.0"
+crc32fast = "1.4.0"
+leb128 = "0.2.5"
+log = "0.4.21"
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.115"
+sha2 = "0.11.0-pre.3"
+zip = "0.6.6"
 
 [dependencies.env_logger]
 version = "0.9.0"

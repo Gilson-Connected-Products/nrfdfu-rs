@@ -14,7 +14,7 @@ pub fn read_elf_image(elf: &[u8]) -> Result<Vec<u8>> {
         data: &'a [u8],
     }
 
-    let file_kind = object::FileKind::parse(elf)
+    let file_kind = FileKind::parse(elf)
         .map_err(|e| format!("failed to parse firmware as ELF file: {}", e))?;
 
     if !matches!(file_kind, FileKind::Elf32) {
@@ -35,7 +35,7 @@ pub fn read_elf_image(elf: &[u8]) -> Result<Vec<u8>> {
     for (i, program) in header.program_headers(endian, elf)?.iter().enumerate() {
         let data = program
             .data(endian, elf)
-            .map_err(|()| format!("failed to load segment data (corrupt ELF?)"))?;
+            .map_err(|()| "failed to load segment data (corrupt ELF?)".to_string())?;
         let p_type = program.p_type(endian);
 
         if !data.is_empty() && p_type == PT_LOAD {
@@ -74,11 +74,12 @@ pub fn read_elf_image(elf: &[u8]) -> Result<Vec<u8>> {
     }
 
     if chunks.is_empty() {
-        return Err(format!(
+        return Err(
             "no loadable program segments found; ensure that the linker is \
             invoked correctly (passing the linker script)"
-        )
-        .into());
+                .to_string()
+                .into()
+        );
     }
 
     let mut image = Vec::new();
