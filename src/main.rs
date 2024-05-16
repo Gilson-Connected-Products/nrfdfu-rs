@@ -12,18 +12,25 @@ use zip::ZipArchive;
 #[macro_use]
 mod macros;
 mod elf;
-mod init_packet;
 mod messages;
 mod slip;
+mod zip_file;
 
 use messages::*;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const USB_VID: u16 = 0x1915;
-const USB_PID: u16 = 0x521f;
+/// Nordic's vendor ID. Nordic's default nRF52 bootloader supplies this vendor ID. If the device has
+/// a custom bootloader that supplies a different VID, this utility will not work.
+///
+/// See https://usb.org/members which lists Nordic Semiconductor's decimal ID as 6421.
+const NORDIC_BOOTLOADER_USB_VID: u16 = 0x1915;
 
-/// Bootloader protocol version we support.
+/// The product ID supplied by Nordic's default nRF52 bootloader. If the device has a custom
+/// bootloader that supplies a different PID, this utility will not work.
+const NORDIC_BOOTLOADER_USB_PID: u16 = 0x521f;
+
+/// Nordic bootloader protocol version supported by this utility.
 const PROTOCOL_VERSION: u8 = 1;
 
 fn main() {
@@ -47,13 +54,16 @@ fn run() -> Result<()> {
         .skip(1)
         .next()
         .ok_or_else(|| "missing argument (expected path to .zip file)".to_string())?;
+    let path_str = zip_path.as_os_str().to_str().unwrap();
+
     let (dat, mut bin) =
-        read_zip_file(zip_path.as_os_str().to_str().unwrap())?;
+        zip_file::read_zip_file(path_str)?;
 
     let matching_ports: Vec<_> = available_ports()?
         .into_iter()
         .filter(|port| match &port.port_type {
-            serialport::SerialPortType::UsbPort(usb) => usb.vid == USB_VID && usb.pid == USB_PID,
+            serialport::SerialPortType::UsbPort(usb) =>
+                usb.vid == NORDIC_BOOTLOADER_USB_VID && usb.pid == NORDIC_BOOTLOADER_USB_PID,
             _ => false,
         })
         .collect();
@@ -71,10 +81,15 @@ fn run() -> Result<()> {
             let port = &matching_ports[0].port_name;
             log::debug!("opening {} (type {:?})", port, matching_ports[0].port_type);
             serialport::new(port, 115200)
-                .timeout(Duration::from_millis(60000))
+                .timeout(Duration::from_millis(60000)) // TODO: accept timeout value as run param
                 .open()?
         }
-        _ => return Err("multiple matching USB serial devices found".to_string().into()),
+        _ => return Err(
+            "multiple matching USB serial devices found.\n\
+            This utility only works when a single device is in bootloader mode."
+                .to_string()
+                .into()
+        ),
     };
 
     // On Windows, this is required, otherwise communication fails with timeouts
@@ -342,29 +357,4 @@ struct Manifest {
 #[derive(Debug, Deserialize)]
 struct OuterManifest {
     manifest: Manifest,
-}
-
-fn read_zip_file(path: &str) -> Result<(Vec<u8>, Vec<u8>)> {
-    let reader = fs::File::open(path)?;
-    let mut archive = ZipArchive::new(reader)?;
-    let application = {
-        let mut file = archive.by_name("manifest.json")?;
-        let mut manifest_string = String::new();
-        file.read_to_string(&mut manifest_string)?;
-        let outer = from_str::<OuterManifest>(&manifest_string)?;
-        outer.manifest.application
-    };
-    let dat_file = {
-        let mut file = archive.by_name(&application.dat_file)?;
-        let mut dat_vec = Vec::new();
-        file.read_to_end(&mut dat_vec)?;
-        dat_vec
-    };
-    let bin_file = {
-        let mut file = archive.by_name(&application.bin_file)?;
-        let mut bin_vec = Vec::new();
-        file.read_to_end(&mut bin_vec)?;
-        bin_vec
-    };
-    Ok((dat_file, bin_file))
 }
