@@ -336,7 +336,7 @@ impl Request for WriteRequest<'_> {
     type Response = WriteResponse;
 
     fn write_payload<W: Write>(&self, mut writer: W) -> io::Result<()> {
-        writer.write(self.request_payload)?;
+        writer.write_all(self.request_payload)?;
         Ok(())
     }
 }

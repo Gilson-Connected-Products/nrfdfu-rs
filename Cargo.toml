@@ -11,6 +11,9 @@ readme = "README.md"
 description = "A flashing tool for the nRF bootloader"
 repository = "https://github.com/ferrous-systems/nrfdfu-rs"
 
+[lib]
+name = "nrfdfu"
+
 [dependencies]
 byteorder = "1.5.0"
 crc32fast = "1.4.0"

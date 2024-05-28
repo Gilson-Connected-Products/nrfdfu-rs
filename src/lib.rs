@@ -1,96 +1,35 @@
 use log::LevelFilter;
-use serde_json::from_str;
-use serialport::{available_ports, SerialPort};
+use serialport::SerialPort;
 use std::convert::TryInto;
 use std::hash::Hasher;
-use std::io::Read;
-use std::time::Duration;
-use std::{error::Error, fs};
+use std::error::Error;
 use serde::Deserialize;
-use zip::ZipArchive;
 
 #[macro_use]
 mod macros;
-mod elf;
 mod messages;
 mod slip;
 mod zip_file;
 
 use messages::*;
 
-type Result<T> = std::result::Result<T, Box<dyn Error>>;
-
-/// Nordic's vendor ID. Nordic's default nRF52 bootloader supplies this vendor ID. If the device has
-/// a custom bootloader that supplies a different VID, this utility will not work.
-///
-/// See https://usb.org/members which lists Nordic Semiconductor's decimal ID as 6421.
-const NORDIC_BOOTLOADER_USB_VID: u16 = 0x1915;
-
-/// The product ID supplied by Nordic's default nRF52 bootloader. If the device has a custom
-/// bootloader that supplies a different PID, this utility will not work.
-const NORDIC_BOOTLOADER_USB_PID: u16 = 0x521f;
+pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 /// Nordic bootloader protocol version supported by this utility.
 const PROTOCOL_VERSION: u8 = 1;
 
-fn main() {
-    match run() {
-        Ok(()) => {}
-        Err(e) => {
-            eprintln!("error: {}", e);
-            std::process::exit(1);
-        }
-    }
-}
-
-fn run() -> Result<()> {
+/// Execute a firmware update.  Use the supplied vendor id and product id.
+pub fn run(
+    zip_path: &str,
+    mut port: Box<dyn SerialPort>
+) -> crate::Result<()> {
     // We show info and higher levels by default, but allow overriding this via `RUST_LOG`.
     env_logger::builder()
         .filter_level(LevelFilter::Info)
         .parse_default_env()
         .init();
 
-    let zip_path = std::env::args_os()
-        .skip(1)
-        .next()
-        .ok_or_else(|| "missing argument (expected path to .zip file)".to_string())?;
-    let path_str = zip_path.as_os_str().to_str().unwrap();
-
-    let (dat, mut bin) =
-        zip_file::read_zip_file(path_str)?;
-
-    let matching_ports: Vec<_> = available_ports()?
-        .into_iter()
-        .filter(|port| match &port.port_type {
-            serialport::SerialPortType::UsbPort(usb) =>
-                usb.vid == NORDIC_BOOTLOADER_USB_VID && usb.pid == NORDIC_BOOTLOADER_USB_PID,
-            _ => false,
-        })
-        .collect();
-
-    let mut port = match matching_ports.len() {
-        0 => {
-            return Err(
-                "no matching USB serial device found.\n\
-                Remember to put the device in bootloader mode!"
-                    .to_string()
-                    .into()
-            )
-        }
-        1 => {
-            let port = &matching_ports[0].port_name;
-            log::debug!("opening {} (type {:?})", port, matching_ports[0].port_type);
-            serialport::new(port, 115200)
-                .timeout(Duration::from_millis(60000)) // TODO: accept timeout value as run param
-                .open()?
-        }
-        _ => return Err(
-            "multiple matching USB serial devices found.\n\
-            This utility only works when a single device is in bootloader mode."
-                .to_string()
-                .into()
-        ),
-    };
+    let (dat, mut bin) = zip_file::read_zip_file(zip_path)?;
 
     // On Windows, this is required, otherwise communication fails with timeouts
     // (or just hangs forever).
